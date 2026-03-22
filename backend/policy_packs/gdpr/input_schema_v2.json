@@ -1,0 +1,311 @@
+{
+  "schema_id": "gdpr_input_schema_v2",
+  "schema_name": "GDPR Policy Engine Input Schema v2",
+  "version": "2.0.0",
+  "description": "Project-ready input schema for GDPR policy evaluation. Fields are divided into collected, manual, and derived groups for hybrid cloud/legal compliance assessment.",
+  "groups": {
+    "collected_fields": {
+      "auto": {
+        "current_region": {
+          "type": "string",
+          "required": true,
+          "description": "Current AWS region where the dataset is stored or processed.",
+          "example": "eu-central-1",
+          "source": "aws_config"
+        },
+        "target_country": {
+          "type": "string",
+          "required": false,
+          "description": "Country mapped from target_region.",
+          "example": "US",
+          "source": "derived_from_region_mapping"
+        },
+        "adequacy_decision_exists": {
+          "type": "boolean",
+          "required": false,
+          "description": "Whether the target country has an EU adequacy decision.",
+          "example": false,
+          "source": "country_adequacy_lookup"
+        },
+        "encryption_at_rest": {
+          "type": "boolean",
+          "required": true,
+          "description": "Whether encryption at rest is enabled for the target dataset/resource.",
+          "example": true,
+          "source": "aws_config"
+        }
+      },
+      "semi_auto": {
+        "data_type": {
+          "type": "string",
+          "required": false,
+          "description": "Detected or inferred dataset type.",
+          "example": "customer_records",
+          "source": "macie_or_tag_inference"
+        },
+        "contains_sensitive_data": {
+          "type": "boolean",
+          "required": false,
+          "description": "Whether the dataset appears to contain special category or sensitive personal data.",
+          "example": true,
+          "source": "amazon_macie"
+        },
+        "uses_processor": {
+          "type": "boolean",
+          "required": false,
+          "description": "Whether an external processor is involved.",
+          "example": true,
+          "source": "service_mapping_or_manual_confirmation"
+        },
+        "encryption_in_transit": {
+          "type": "boolean",
+          "required": false,
+          "description": "Whether transport encryption is enabled.",
+          "example": true,
+          "source": "tls_endpoint_or_architecture_inference"
+        },
+        "access_control_in_place": {
+          "type": "boolean",
+          "required": false,
+          "description": "Whether baseline access control appears to be configured.",
+          "example": true,
+          "source": "iam_policy_bucket_policy_security_group_review"
+        }
+      }
+    },
+    "manual_context_fields": {
+      "dataset_name": {
+        "type": "string",
+        "required": true,
+        "description": "Human-readable name of the dataset being evaluated.",
+        "example": "customer-backup-bucket"
+      },
+      "data_subject_region": {
+        "type": "string",
+        "required": true,
+        "enum": ["EU", "EEA", "UK", "OTHER"],
+        "description": "Region of the data subjects relevant to the assessment.",
+        "example": "EU"
+      },
+      "processing_purpose_defined": {
+        "type": "boolean",
+        "required": true,
+        "description": "Whether the purpose of processing is clearly defined.",
+        "example": true
+      },
+      "data_minimized": {
+        "type": "boolean",
+        "required": true,
+        "description": "Whether only necessary personal data is processed.",
+        "example": true
+      },
+      "retention_period_defined": {
+        "type": "boolean",
+        "required": true,
+        "description": "Whether retention or deletion period is documented.",
+        "example": true
+      },
+      "lawful_basis": {
+        "type": ["string", "null"],
+        "required": true,
+        "enum": ["consent", "contract", "legal_obligation", "vital_interest", "public_task", "legitimate_interest", null],
+        "description": "Article 6 lawful basis for processing.",
+        "example": "contract"
+      },
+      "special_category_condition_met": {
+        "type": ["boolean", "null"],
+        "required": false,
+        "description": "Whether Article 9 special category processing condition is met.",
+        "example": false
+      },
+      "target_region": {
+        "type": "string",
+        "required": true,
+        "description": "AWS region selected as target for storage or transfer.",
+        "example": "us-east-1"
+      },
+      "dpa_in_place": {
+        "type": "boolean",
+        "required": false,
+        "description": "Whether a Data Processing Agreement exists with the processor.",
+        "example": true
+      },
+      "processor_sufficient_guarantees": {
+        "type": ["boolean", "null"],
+        "required": false,
+        "description": "Whether the processor provides sufficient guarantees under Article 28.",
+        "example": true
+      },
+      "scc_in_place": {
+        "type": "boolean",
+        "required": false,
+        "description": "Whether Standard Contractual Clauses are in place.",
+        "example": true
+      },
+      "bcr_in_place": {
+        "type": "boolean",
+        "required": false,
+        "description": "Whether Binding Corporate Rules are in place.",
+        "example": false
+      },
+      "other_safeguards_in_place": {
+        "type": ["boolean", "null"],
+        "required": false,
+        "description": "Whether other Article 46 safeguards are in place.",
+        "example": false
+      },
+      "incident_response_in_place": {
+        "type": ["boolean", "null"],
+        "required": false,
+        "description": "Whether a documented incident response process exists.",
+        "example": true
+      },
+      "derogation_used": {
+        "type": "boolean",
+        "required": true,
+        "description": "Whether the transfer relies on an Article 49 derogation.",
+        "example": false
+      },
+      "derogation_type": {
+        "type": ["string", "null"],
+        "required": false,
+        "description": "Specific derogation type if Article 49 is used.",
+        "example": null
+      },
+      "privacy_notice_updated": {
+        "type": ["boolean", "null"],
+        "required": false,
+        "description": "Whether privacy notice has been updated for the current processing/transfer context.",
+        "example": true
+      },
+      "transfer_disclosed_to_subject": {
+        "type": ["boolean", "null"],
+        "required": false,
+        "description": "Whether third-country transfer was disclosed to the data subject.",
+        "example": true
+      },
+      "records_of_processing_exists": {
+        "type": ["boolean", "null"],
+        "required": false,
+        "description": "Whether records of processing activities exist.",
+        "example": true
+      },
+      "transfer_documented_in_ropa": {
+        "type": ["boolean", "null"],
+        "required": false,
+        "description": "Whether the transfer and safeguards are documented in ROPA.",
+        "example": true
+      }
+    },
+    "derived_fields": {
+      "is_third_country_transfer": {
+        "type": "boolean",
+        "description": "Calculated from data_subject_region and target_country.",
+        "formula": "true when data_subject_region in ['EU','EEA'] and target_country is outside EU/EEA adequacy-safe area"
+      }
+    }
+  },
+  "validation_rules": [
+    {
+      "rule_id": "require-lawful-basis",
+      "description": "lawful_basis must be present for all assessments",
+      "check": {
+        "field": "lawful_basis",
+        "not_null": true
+      }
+    },
+    {
+      "rule_id": "require-article9-condition-when-sensitive",
+      "description": "If sensitive data exists, special category condition should be provided",
+      "if": {
+        "field": "contains_sensitive_data",
+        "eq": true
+      },
+      "then": {
+        "field": "special_category_condition_met",
+        "not_null": true
+      }
+    },
+    {
+      "rule_id": "require-dpa-when-processor-used",
+      "description": "If processor is used, DPA field should be explicitly provided",
+      "if": {
+        "field": "uses_processor",
+        "eq": true
+      },
+      "then": {
+        "field": "dpa_in_place",
+        "not_null": true
+      }
+    },
+    {
+      "rule_id": "require-derogation-type-when-derogation-used",
+      "description": "If Article 49 derogation is used, derogation_type must be set",
+      "if": {
+        "field": "derogation_used",
+        "eq": true
+      },
+      "then": {
+        "field": "derogation_type",
+        "not_null": true
+      }
+    },
+    {
+      "rule_id": "require-transfer-context-when-target-region-exists",
+      "description": "target_region must always be provided for placement evaluation",
+      "check": {
+        "field": "target_region",
+        "not_null": true
+      }
+    }
+  ],
+  "collection_strategy": {
+    "auto_sources": {
+      "aws_config": [
+        "current_region",
+        "encryption_at_rest"
+      ],
+      "region_mapping": [
+        "target_country"
+      ],
+      "adequacy_lookup_table": [
+        "adequacy_decision_exists"
+      ]
+    },
+    "semi_auto_sources": {
+      "amazon_macie": [
+        "data_type",
+        "contains_sensitive_data"
+      ],
+      "architecture_inference": [
+        "uses_processor",
+        "encryption_in_transit",
+        "access_control_in_place"
+      ]
+    },
+    "manual_sources": {
+      "policy_context_yaml_or_json": [
+        "dataset_name",
+        "data_subject_region",
+        "processing_purpose_defined",
+        "data_minimized",
+        "retention_period_defined",
+        "lawful_basis",
+        "special_category_condition_met",
+        "target_region",
+        "dpa_in_place",
+        "processor_sufficient_guarantees",
+        "scc_in_place",
+        "bcr_in_place",
+        "other_safeguards_in_place",
+        "incident_response_in_place",
+        "derogation_used",
+        "derogation_type",
+        "privacy_notice_updated",
+        "transfer_disclosed_to_subject",
+        "records_of_processing_exists",
+        "transfer_documented_in_ropa"
+      ]
+    }
+  }
+}
