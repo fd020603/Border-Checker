@@ -69,7 +69,10 @@ def merge_inputs(
     merged_data.update(aws_data)
     merged_data.update(policy_data)
 
-    derived = build_derived_fields(merged_data)
+    derived = build_derived_fields(
+        merged_data=merged_data,
+        schema=schema,
+    )
     merged_data.update(derived)
 
     missing_fields = validate_required_fields(schema, merged_data)

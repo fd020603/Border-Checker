@@ -1,6 +1,7 @@
 from typing import Any, Dict, List
 
-from app.services.condition_evaluator import evaluate_condition
+from app.core.constants import DEFAULT_DECISION_ORDER
+from app.services.condition_evaluator import evaluate_condition_with_trace
 from app.services.explanation_service import (
     build_explanation,
     build_next_steps,
@@ -11,70 +12,137 @@ from app.services.resolution_service import (
     collect_legal_basis_articles,
     collect_required_actions,
     resolve_final_decision,
-    resolve_risk_level,
 )
+
+
+def build_pack_info(pack_data: Dict[str, Any]) -> Dict[str, str]:
+    return {
+        "pack_id": pack_data["pack_id"],
+        "pack_name": pack_data["pack_name"],
+        "jurisdiction": pack_data["jurisdiction"],
+        "version": pack_data["version"],
+        "description": pack_data["description"],
+    }
+
+
+def build_rule_rationale(rule: Dict[str, Any], matched_facts: List[str]) -> str:
+    facts_text = "; ".join(matched_facts)
+    explanation_template = rule.get("explanation_template")
+
+    if explanation_template and facts_text:
+        return f"{explanation_template} 확인 사실: {facts_text}"
+
+    if facts_text:
+        return f"{rule['message']} 확인 사실: {facts_text}"
+
+    return rule["message"]
+
+
+def sort_triggered_rules(
+    triggered_rules: List[Dict[str, Any]],
+    decision_order: List[str],
+) -> List[Dict[str, Any]]:
+    decision_rank = {
+        decision: index for index, decision in enumerate(decision_order)
+    }
+    return sorted(
+        triggered_rules,
+        key=lambda item: (
+            decision_rank.get(item["decision"], len(decision_order)),
+            -item.get("priority", 0),
+            item["rule_id"],
+        ),
+    )
+
+
+def build_input_observations(merged_input: Dict[str, Any]) -> List[str]:
+    cross_border_observation = None
+
+    if "transfer_outside_kingdom" in merged_input:
+        cross_border_observation = "사우디 기준 국외 이전 여부: " + (
+            "예" if merged_input.get("transfer_outside_kingdom") else "아니오"
+        )
+    elif "is_third_country_transfer" in merged_input:
+        cross_border_observation = "제3국 이전 여부: " + (
+            "예" if merged_input.get("is_third_country_transfer") else "아니오"
+        )
+
+    observations = [
+        f"데이터셋: {merged_input.get('dataset_name', '미확인')}",
+        "정보주체 범위: "
+        + str(
+            merged_input.get(
+                "data_subject_region",
+                merged_input.get("data_subject_connection", "미확인"),
+            )
+        ),
+        f"현재 리전: {merged_input.get('current_region', '미확인')}",
+        f"대상 리전: {merged_input.get('target_region', '미확인')}",
+        f"대상 국가: {merged_input.get('target_country', '미확인')}",
+    ]
+
+    if cross_border_observation:
+        observations.append(cross_border_observation)
+
+    return observations
 
 
 def evaluate_rules(
     merged_input: Dict[str, Any],
     pack_data: Dict[str, Any],
 ) -> Dict[str, Any]:
-    scoring_policy = pack_data.get("scoring_policy", {})
-    decision_priority = pack_data.get("decision_priority", {})
-
-    base_risk_score = scoring_policy.get("base_risk_score", 0)
-    base_compliance_score = scoring_policy.get("base_compliance_score", 0)
-    caps = scoring_policy.get("caps", {})
-
-    decision_order = decision_priority.get(
-        "order",
-        ["deny", "manual_review", "allow_with_conditions", "allow"],
+    decision_model = pack_data.get("decision_model", {})
+    decision_order = decision_model.get(
+        "precedence",
+        DEFAULT_DECISION_ORDER,
     )
-    score_bands = decision_priority.get("score_bands", {})
 
     triggered_rules: List[Dict[str, Any]] = []
-    total_risk_score = base_risk_score
-    total_compliance_score = base_compliance_score
+    rule_results: List[Dict[str, Any]] = []
 
     rules = pack_data.get("rules", [])
 
     for rule in rules:
         when_clause = rule.get("when", {})
-        is_matched = evaluate_condition(when_clause, merged_input)
+        condition_result = evaluate_condition_with_trace(when_clause, merged_input)
+        reasoning = condition_result["facts"] or condition_result["unmet_facts"]
 
-        if is_matched:
-            triggered_rules.append(
-                {
-                    "rule_id": rule["rule_id"],
-                    "article": rule["article"],
-                    "title": rule["title"],
-                    "category": rule["category"],
-                    "priority": rule["priority"],
-                    "decision": rule["decision"],
-                    "risk_score_delta": rule["risk_score_delta"],
-                    "compliance_score_delta": rule["compliance_score_delta"],
-                    "message": rule["message"],
-                    "required_actions": rule["required_actions"],
-                    "references": rule["references"],
-                }
-            )
+        rule_results.append(
+            {
+                "rule_id": rule["rule_id"],
+                "title": rule["title"],
+                "category": rule["category"],
+                "matched": condition_result["matched"],
+                "decision": rule["decision"] if condition_result["matched"] else None,
+                "reasoning": reasoning,
+            }
+        )
 
-            total_risk_score += rule["risk_score_delta"]
-            total_compliance_score += rule["compliance_score_delta"]
+        if not condition_result["matched"]:
+            continue
 
-    total_risk_score = max(
-        caps.get("min_risk_score", 0),
-        min(total_risk_score, caps.get("max_risk_score", 100)),
-    )
-    total_compliance_score = max(
-        caps.get("min_compliance_score", 0),
-        min(total_compliance_score, caps.get("max_compliance_score", 100)),
-    )
+        matched_facts = condition_result["facts"]
+        triggered_rules.append(
+            {
+                "rule_id": rule["rule_id"],
+                "article": rule["article"],
+                "title": rule["title"],
+                "category": rule["category"],
+                "priority": rule["priority"],
+                "decision": rule["decision"],
+                "message": rule["message"],
+                "rationale": build_rule_rationale(rule, matched_facts),
+                "matched_facts": matched_facts,
+                "required_evidence": rule.get("required_evidence", []),
+                "required_actions": rule.get("required_actions", []),
+                "references": rule.get("references", []),
+                "reviewer_notes": rule.get("reviewer_notes", []),
+            }
+        )
 
-    triggered_rules.sort(key=lambda x: x["priority"], reverse=True)
+    triggered_rules = sort_triggered_rules(triggered_rules, decision_order)
 
     final_decision = resolve_final_decision(triggered_rules, decision_order)
-    risk_level = resolve_risk_level(total_risk_score, score_bands)
     legal_basis_articles = collect_legal_basis_articles(triggered_rules)
     required_actions = collect_required_actions(triggered_rules)
 
@@ -85,29 +153,32 @@ def evaluate_rules(
         triggered_rules=triggered_rules,
         legal_basis_articles=legal_basis_articles,
     )
-    next_steps = build_next_steps(required_actions)
+    next_steps = build_next_steps(final_decision, required_actions)
 
     qualitative_review_hints = build_qualitative_review_hints(
         pack_data=pack_data,
         triggered_rules=triggered_rules,
         final_decision=final_decision,
+        merged_input=merged_input,
     )
 
     return {
-        "message": "Rules evaluated, final decision resolved, explanation generated, and qualitative review hints added successfully.",
         "final_decision": final_decision,
-        "risk_level": risk_level,
-        "matched_rule_count": len(triggered_rules),
-        "base_risk_score": base_risk_score,
-        "base_compliance_score": base_compliance_score,
-        "total_risk_score": total_risk_score,
-        "total_compliance_score": total_compliance_score,
-        "legal_basis_articles": legal_basis_articles,
-        "required_actions": required_actions,
         "summary": summary,
         "explanation": explanation,
+        "legal_basis_articles": legal_basis_articles,
+        "required_actions": required_actions,
         "next_steps": next_steps,
         "qualitative_review_hints": qualitative_review_hints,
         "triggered_rules": triggered_rules,
+        "pack_info": build_pack_info(pack_data),
+        "evaluation_trace": {
+            "decision_order": decision_order,
+            "evaluated_rule_count": len(rules),
+            "matched_rule_count": len(triggered_rules),
+            "strictest_triggered_decision": final_decision,
+            "input_observations": build_input_observations(merged_input),
+            "rule_results": rule_results,
+        },
         "merged_input": merged_input,
     }

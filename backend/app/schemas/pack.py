@@ -1,6 +1,8 @@
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from app.schemas.decision import DecisionGrade
 
 
 class PackSummaryResponse(BaseModel):
@@ -9,24 +11,26 @@ class PackSummaryResponse(BaseModel):
     jurisdiction: str
     version: str
     description: str
-    included_articles: List[int]
     rule_count: int
+    supported_decisions: List[DecisionGrade]
+    covered_categories: List[str]
+    disclaimer: str
 
 
 class RuleDetailResponse(BaseModel):
     rule_id: str
-    article: int
+    article: str
     title: str
     category: str
     priority: int
-    decision: str
-    risk_score_delta: int
-    compliance_score_delta: int
+    decision: DecisionGrade
     when: Dict[str, Any]
     required_evidence: List[str]
     required_actions: List[str]
     message: str
     references: List[str]
+    explanation_template: Optional[str] = None
+    reviewer_notes: List[str] = Field(default_factory=list)
 
 
 class PackDetailResponse(BaseModel):
@@ -35,8 +39,13 @@ class PackDetailResponse(BaseModel):
     jurisdiction: str
     version: str
     description: str
-    source: Dict[str, Any]
-    decision_priority: Dict[str, Any]
-    scoring_policy: Dict[str, Any]
+    supported_decisions: List[DecisionGrade]
+    decision_model: Dict[str, Any]
+    source_references: List[str]
+    assumptions: List[str]
+    limitations: List[str]
+    disclaimer: str
     rule_count: int
-    qualitative_review_templates: Optional[Dict[str, Any]] = None
+    covered_categories: List[str]
+    review_guidance: List[str]
+    sample_scenarios: List[Dict[str, Any]]

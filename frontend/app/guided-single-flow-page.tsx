@@ -1,0 +1,721 @@
+"use client";
+
+import { useEffect, useState, useTransition } from "react";
+
+import { PACK_UI_DEFINITIONS } from "./guided-pack-config";
+import type {
+  GuidedField,
+  GuidedFormState,
+  PackUiDefinition,
+} from "./guided-pack-types";
+import { ExplainabilityPanel, ResultPanel } from "./workspace-output-panels";
+import { buildErrorMessage, fetchJson } from "./workspace-runtime";
+import type {
+  EvaluationResult,
+  PackDetail,
+  PackSummary,
+} from "./workspace-types";
+import {
+  ActionButton,
+  EmptyState,
+  ErrorBanner,
+  MetricCard,
+  SegmentedField,
+  SelectField,
+  StatusBanner,
+  SummaryRow,
+  TextList,
+} from "./workspace-ui";
+
+const SELECTED_PACK_STORAGE_KEY = "border-checker-selected-pack";
+
+type ScreenMode = "intro" | "step" | "review" | "result";
+
+function renderField(
+  field: GuidedField,
+  state: GuidedFormState,
+  onChange: (key: string, value: string) => void,
+) {
+  if (field.kind === "select") {
+    return (
+      <SelectField
+        label={field.label}
+        helper={field.helper}
+        tooltip={field.tooltip}
+        value={state[field.key] ?? ""}
+        onChange={(value) => onChange(field.key, value)}
+        options={field.options}
+      />
+    );
+  }
+
+  return (
+    <SegmentedField
+      label={field.label}
+      helper={field.helper}
+      tooltip={field.tooltip}
+      value={state[field.key] ?? ""}
+      onChange={(value) => onChange(field.key, value)}
+      options={field.options}
+    />
+  );
+}
+
+function optionLabelForField(field: GuidedField, rawValue: string) {
+  if (rawValue === "") {
+    return "";
+  }
+
+  const matched = field.options.find((option) => option.value === rawValue);
+  if (matched) {
+    return matched.label;
+  }
+
+  if (rawValue === "true") {
+    return "예";
+  }
+  if (rawValue === "false") {
+    return "아니오";
+  }
+  if (rawValue === "unknown") {
+    return "잘 모르겠음";
+  }
+
+  return rawValue;
+}
+
+function collectVisibleStepFields(
+  definition: PackUiDefinition,
+  state: GuidedFormState,
+  stepIndex: number,
+) {
+  const step = definition.steps[stepIndex];
+  return step.fields.filter(
+    (field) => !field.visibleIf || field.visibleIf(state),
+  );
+}
+
+function collectStepMissingFields(
+  definition: PackUiDefinition,
+  state: GuidedFormState,
+  stepIndex: number,
+) {
+  return collectVisibleStepFields(definition, state, stepIndex)
+    .filter((field) => field.required)
+    .filter((field) => !state[field.key])
+    .map((field) => field.label);
+}
+
+function buildReviewSections(
+  definition: PackUiDefinition,
+  state: GuidedFormState,
+) {
+  return definition.steps
+    .map((step, stepIndex) => {
+      const rows = collectVisibleStepFields(definition, state, stepIndex)
+        .map((field) => ({
+          label: field.label,
+          value: optionLabelForField(field, state[field.key] ?? ""),
+        }))
+        .filter((row) => row.value);
+
+      return {
+        id: step.id,
+        title: step.title,
+        description: step.description,
+        rows,
+      };
+    })
+    .filter((section) => section.rows.length > 0);
+}
+
+export function GuidedSingleFlowPage() {
+  const [packSummaries, setPackSummaries] = useState<PackSummary[]>([]);
+  const [selectedPackId, setSelectedPackId] = useState("gdpr");
+  const [packDetail, setPackDetail] = useState<PackDetail | null>(null);
+  const [formState, setFormState] = useState<GuidedFormState>({});
+  const [screenMode, setScreenMode] = useState<ScreenMode>("intro");
+  const [stepIndex, setStepIndex] = useState(0);
+  const [evaluationResult, setEvaluationResult] =
+    useState<EvaluationResult | null>(null);
+  const [statusMessage, setStatusMessage] = useState(
+    "법제를 고르고 단계별 질문에 답하면 마지막 검토 화면에서 평가를 실행합니다.",
+  );
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isBusy, setIsBusy] = useState(false);
+  const [storageReady, setStorageReady] = useState(false);
+  const [, startTransition] = useTransition();
+
+  const packDefinition =
+    PACK_UI_DEFINITIONS[selectedPackId] ?? PACK_UI_DEFINITIONS.gdpr;
+  const currentStep = packDefinition.steps[stepIndex];
+  const visibleFields = collectVisibleStepFields(
+    packDefinition,
+    formState,
+    stepIndex,
+  );
+  const currentStepMissing = collectStepMissingFields(
+    packDefinition,
+    formState,
+    stepIndex,
+  );
+  const overallMissing = packDefinition.validate(formState);
+  const advisoryNotes = packDefinition.buildAdvisoryNotes(formState);
+  const reviewSections = buildReviewSections(packDefinition, formState);
+  const progressPercent =
+    screenMode === "intro"
+      ? 8
+      : screenMode === "review"
+        ? 92
+        : ((stepIndex + 1) / packDefinition.steps.length) * 100;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function bootstrap() {
+      try {
+        const summaries = await fetchJson<PackSummary[]>("/api/v1/packs");
+        const supportedSummaries = summaries.filter(
+          (pack) => pack.pack_id in PACK_UI_DEFINITIONS,
+        );
+        const storedPackId =
+          window.localStorage.getItem(SELECTED_PACK_STORAGE_KEY) ?? "gdpr";
+        const nextPackId =
+          storedPackId in PACK_UI_DEFINITIONS ? storedPackId : "gdpr";
+
+        if (!cancelled) {
+          startTransition(() => {
+            setPackSummaries(supportedSummaries);
+            setSelectedPackId(nextPackId);
+          });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setErrorMessage(buildErrorMessage(error));
+        }
+      }
+    }
+
+    void bootstrap();
+    return () => {
+      cancelled = true;
+    };
+  }, [startTransition]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const definition = PACK_UI_DEFINITIONS[selectedPackId];
+    if (!definition) {
+      return;
+    }
+
+    window.localStorage.setItem(SELECTED_PACK_STORAGE_KEY, selectedPackId);
+
+    const storedState = window.localStorage.getItem(definition.storageKey);
+    let nextState = { ...definition.defaultState };
+    if (storedState) {
+      try {
+        nextState = {
+          ...definition.defaultState,
+          ...(JSON.parse(storedState) as GuidedFormState),
+        };
+      } catch {}
+    }
+
+    startTransition(() => {
+      setFormState(nextState);
+      setStepIndex(0);
+      setScreenMode("intro");
+      setEvaluationResult(null);
+      setStorageReady(true);
+      setStatusMessage(
+        `${definition.label} 질문 흐름을 불러왔습니다. 시작하기를 누르면 한 단계씩 진행됩니다.`,
+      );
+    });
+
+    async function loadDetail() {
+      try {
+        const detail = await fetchJson<PackDetail>(
+          `/api/v1/packs/${selectedPackId}/detail`,
+        );
+        if (!cancelled) {
+          setPackDetail(detail);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setErrorMessage(buildErrorMessage(error));
+        }
+      }
+    }
+
+    void loadDetail();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPackId, startTransition]);
+
+  useEffect(() => {
+    if (!storageReady) {
+      return;
+    }
+
+    window.localStorage.setItem(
+      packDefinition.storageKey,
+      JSON.stringify(formState),
+    );
+  }, [formState, packDefinition.storageKey, storageReady]);
+
+  function updateField(key: string, value: string) {
+    setErrorMessage(null);
+    setFormState((current) => {
+      const next = { ...current, [key]: value };
+
+      if (key === "derogation_used" && value !== "true") {
+        next.derogation_type = "";
+      }
+      if (key === "transfer_exception_used" && value !== "true") {
+        next.transfer_exception_type = "";
+      }
+      if (key === "dpia_required" && value !== "true") {
+        next.dpia_completed = "";
+      }
+      if (key === "dpo_required" && value !== "true") {
+        next.dpo_assigned = "";
+      }
+      if (key === "processing_legal_basis" && value !== "consent") {
+        next.consent_withdrawal_process_ready = "unknown";
+      }
+      if (key === "contains_sensitive_data" && value !== "true") {
+        next.special_category_condition_met = "unknown";
+        next.explicit_consent_for_sensitive_data = "unknown";
+      }
+
+      return next;
+    });
+  }
+
+  function resetCurrentPack() {
+    window.localStorage.removeItem(packDefinition.storageKey);
+    startTransition(() => {
+      setFormState({ ...packDefinition.defaultState });
+      setStepIndex(0);
+      setScreenMode("intro");
+      setEvaluationResult(null);
+      setErrorMessage(null);
+      setStatusMessage("입력을 초기화했습니다. 다시 시작해 주세요.");
+    });
+  }
+
+  async function runEvaluation() {
+    setIsBusy(true);
+    setErrorMessage(null);
+
+    try {
+      const response = await fetchJson<EvaluationResult>("/api/v1/evaluate", {
+        method: "POST",
+        body: JSON.stringify({
+          pack_id: selectedPackId,
+          ...packDefinition.buildPayload(formState),
+        }),
+      });
+
+      startTransition(() => {
+        setEvaluationResult(response);
+        setScreenMode("result");
+        setStatusMessage("평가가 완료되었습니다. 최종 결과 화면을 확인해 주세요.");
+      });
+    } catch (error) {
+      setErrorMessage(buildErrorMessage(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  const availablePackCards = Object.values(PACK_UI_DEFINITIONS).map((definition) => {
+    const matchedSummary = packSummaries.find(
+      (pack) => pack.pack_id === definition.id,
+    );
+
+    return (
+      matchedSummary ?? {
+        pack_id: definition.id,
+        pack_name: definition.label,
+        jurisdiction: definition.label,
+        version: "1.0.0",
+        description: definition.subtitle,
+        rule_count: definition.steps.length,
+        supported_decisions: [],
+        covered_categories: [],
+        disclaimer: "",
+      }
+    );
+  });
+
+  if (screenMode === "result" && evaluationResult) {
+    return (
+      <main className="app-shell min-h-screen overflow-hidden">
+        <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
+          <section className="glass-panel rounded-[34px] border border-[var(--color-line)] px-6 py-7 sm:px-8">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--color-muted)]">
+                  Evaluation Complete
+                </p>
+                <h1 className="mt-3 text-3xl font-bold tracking-tight text-[var(--color-ink)]">
+                  {packDefinition.label} 평가 결과
+                </h1>
+                <p className="mt-2 text-sm leading-7 text-[var(--color-muted)]">
+                  입력을 모두 확인한 뒤 최종 결과를 생성했습니다. 필요하면 다시
+                  입력 화면으로 돌아가 수정할 수 있습니다.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <ActionButton
+                  label="입력 다시 보기"
+                  onClick={() => setScreenMode("review")}
+                  variant="secondary"
+                />
+                <ActionButton
+                  label="법제 바꾸기"
+                  onClick={() => setScreenMode("intro")}
+                  variant="secondary"
+                />
+                <ActionButton label="새로 시작" onClick={resetCurrentPack} />
+              </div>
+            </div>
+          </section>
+
+          <section className="grid gap-6 xl:grid-cols-[1.02fr_0.98fr]">
+            <ResultPanel evaluationResult={evaluationResult} />
+            <ExplainabilityPanel
+              evaluationResult={evaluationResult}
+              mergePreview={evaluationResult.merged_input}
+            />
+          </section>
+
+          <footer className="rounded-[28px] border border-[var(--color-line)] bg-[rgba(255,253,248,0.76)] px-6 py-5 text-sm leading-7 text-[var(--color-muted)]">
+            <p className="font-semibold text-[var(--color-ink)]">Disclaimer</p>
+            <p>
+              Border Checker는 정책 기반 의사결정 지원 도구입니다. 실제 운영
+              반영 전에는 법무, 프라이버시, 보안 담당자가 사실관계와 문서를 함께
+              검토해야 합니다.
+            </p>
+          </footer>
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="app-shell min-h-screen overflow-hidden">
+      <div className="mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-5 px-4 py-6 sm:px-6">
+        <header className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <span className="rounded-full border border-[var(--color-accent)] bg-[var(--color-accent-soft)] px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--color-accent)]">
+              Border Checker
+            </span>
+            <span className="text-sm text-[var(--color-muted)]">
+              Guided Intake Flow
+            </span>
+          </div>
+          {screenMode !== "intro" ? (
+            <button
+              type="button"
+              onClick={() => setScreenMode("intro")}
+              className="text-sm font-medium text-[var(--color-accent)] underline-offset-4 hover:underline"
+            >
+              법제 다시 선택
+            </button>
+          ) : null}
+        </header>
+
+        <div className="flex flex-1 items-center justify-center">
+          <section className="glass-panel w-full overflow-hidden rounded-[36px] border border-[var(--color-line)] px-6 py-7 sm:px-8 sm:py-8">
+            <div
+              key={`${selectedPackId}-${screenMode}-${stepIndex}`}
+              className="screen-enter"
+            >
+            {screenMode === "intro" ? (
+              <div className="space-y-7">
+                <div className="space-y-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--color-muted)]">
+                    Step 0
+                  </p>
+                  <h1 className="text-3xl font-bold tracking-tight text-[var(--color-ink)] sm:text-4xl">
+                    어떤 법제로 검토할지 먼저 선택해 주세요
+                  </h1>
+                  <p className="max-w-2xl text-sm leading-7 text-[var(--color-muted)]">
+                    한 번에 모든 질문을 보여주지 않고, 선택한 법제에 맞는 질문만
+                    한 화면씩 차례대로 보여줍니다. 마지막 검토 화면에서만 결과를
+                    생성합니다.
+                  </p>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {availablePackCards.map((pack) => {
+                    const isActive = pack.pack_id === selectedPackId;
+                    return (
+                      <button
+                        key={pack.pack_id}
+                        type="button"
+                        onClick={() => setSelectedPackId(pack.pack_id)}
+                        className={`interactive-card rounded-[28px] border p-5 text-left transition ${
+                          isActive
+                            ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
+                            : "border-[var(--color-line)] bg-[var(--color-surface-strong)]"
+                        }`}
+                      >
+                        <p className="text-sm font-semibold text-[var(--color-ink)]">
+                          {pack.pack_name}
+                        </p>
+                        <p className="mt-2 text-sm leading-6 text-[var(--color-muted)]">
+                          {PACK_UI_DEFINITIONS[pack.pack_id]?.subtitle ?? pack.description}
+                        </p>
+                        <div className="mt-4 flex flex-wrap gap-2 text-xs text-[var(--color-muted)]">
+                          <span className="rounded-full border border-[var(--color-line)] px-2.5 py-1">
+                            {pack.jurisdiction}
+                          </span>
+                          <span className="rounded-full border border-[var(--color-line)] px-2.5 py-1">
+                            v{pack.version}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <MetricCard label="선택된 팩" value={packDefinition.label} />
+                  <MetricCard
+                    label="입력 방식"
+                    value="한 화면씩 단계 진행"
+                  />
+                  <MetricCard
+                    label="규칙 수"
+                    value={packDetail ? `${packDetail.rule_count} rules` : "로딩 중"}
+                  />
+                </div>
+
+                {packDetail ? (
+                  <TextList
+                    title="검토 가이드"
+                    items={packDetail.review_guidance}
+                  />
+                ) : (
+                  <EmptyState
+                    title="팩 정보를 불러오는 중입니다."
+                    description="선택한 팩의 질문 구조와 메타데이터를 준비하고 있습니다."
+                  />
+                )}
+
+                <div className="flex flex-wrap gap-3">
+                  <ActionButton
+                    label="시작하기"
+                    onClick={() => {
+                      setStepIndex(0);
+                      setScreenMode("step");
+                      setStatusMessage(
+                        `${packDefinition.label} 질문을 시작합니다. 각 단계마다 필요한 항목만 보여드립니다.`,
+                      );
+                    }}
+                  />
+                  <ActionButton
+                    label="입력 초기화"
+                    onClick={resetCurrentPack}
+                    variant="secondary"
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            {screenMode === "step" ? (
+              <div className="space-y-7">
+                <div className="space-y-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--color-muted)]">
+                    Step {stepIndex + 1}
+                  </p>
+                  <h1 className="text-3xl font-bold tracking-tight text-[var(--color-ink)]">
+                    {currentStep.title}
+                  </h1>
+                  <p className="text-sm leading-7 text-[var(--color-muted)]">
+                    {currentStep.description}
+                  </p>
+                  <div className="pt-2">
+                    <div className="flex items-center justify-between text-xs text-[var(--color-muted)]">
+                      <span>진행률</span>
+                      <span>{Math.round(progressPercent)}%</span>
+                    </div>
+                    <div className="progress-track mt-2">
+                      <div
+                        className="progress-fill"
+                        style={{ width: `${progressPercent}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {packDefinition.steps.map((step, index) => (
+                    <span
+                      key={step.id}
+                      className={`rounded-full border px-3 py-1.5 text-sm ${
+                        index === stepIndex
+                          ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
+                          : "border-[var(--color-line)] bg-[var(--color-surface-strong)] text-[var(--color-muted)]"
+                      }`}
+                    >
+                      {index + 1}. {step.title}
+                    </span>
+                  ))}
+                </div>
+
+                <div className="grid gap-5">
+                  {visibleFields.map((field) => (
+                    <div key={field.key}>{renderField(field, formState, updateField)}</div>
+                  ))}
+                </div>
+
+                <TextList title="입력 안내" items={advisoryNotes} />
+                <StatusBanner message={statusMessage} />
+                {errorMessage ? <ErrorBanner message={errorMessage} /> : null}
+
+                <div className="flex flex-wrap gap-3">
+                  <ActionButton
+                    label="이전"
+                    onClick={() =>
+                      stepIndex === 0
+                        ? setScreenMode("intro")
+                        : setStepIndex((value) => value - 1)
+                    }
+                    variant="secondary"
+                  />
+                  <ActionButton
+                    label={
+                      stepIndex === packDefinition.steps.length - 1
+                        ? "검토 화면으로"
+                        : "다음"
+                    }
+                    onClick={() => {
+                      if (currentStepMissing.length > 0) {
+                        setErrorMessage(
+                          `${currentStepMissing.join(", ")} 항목을 먼저 선택해 주세요.`,
+                        );
+                        return;
+                      }
+
+                      setErrorMessage(null);
+                      if (stepIndex === packDefinition.steps.length - 1) {
+                        setScreenMode("review");
+                        return;
+                      }
+                      setStepIndex((value) => value + 1);
+                    }}
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            {screenMode === "review" ? (
+              <div className="space-y-7">
+                <div className="space-y-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[var(--color-muted)]">
+                    Final Review
+                  </p>
+                  <h1 className="text-3xl font-bold tracking-tight text-[var(--color-ink)]">
+                    입력 내용을 마지막으로 확인해 주세요
+                  </h1>
+                  <p className="text-sm leading-7 text-[var(--color-muted)]">
+                    여기서 검토가 끝나면 평가를 실행합니다. 결과 화면 전에는 최종
+                    판단을 보여주지 않습니다.
+                  </p>
+                  <div className="pt-2">
+                    <div className="flex items-center justify-between text-xs text-[var(--color-muted)]">
+                      <span>진행률</span>
+                      <span>{Math.round(progressPercent)}%</span>
+                    </div>
+                    <div className="progress-track mt-2">
+                      <div
+                        className="progress-fill"
+                        style={{ width: `${progressPercent}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <MetricCard label="팩" value={packDefinition.label} />
+                  <MetricCard label="남은 필수값" value={`${overallMissing.length}개`} />
+                  <MetricCard
+                    label="현재 상태"
+                    value={overallMissing.length === 0 ? "평가 가능" : "입력 보완 필요"}
+                  />
+                </div>
+
+                <div className="space-y-4">
+                  {reviewSections.map((section) => (
+                    <div
+                      key={section.id}
+                      className="rounded-[24px] border border-[var(--color-line)] bg-[var(--color-surface-strong)] p-5"
+                    >
+                      <p className="text-sm font-semibold text-[var(--color-ink)]">
+                        {section.title}
+                      </p>
+                      <p className="mt-1 text-sm leading-6 text-[var(--color-muted)]">
+                        {section.description}
+                      </p>
+                      <div className="mt-3">
+                        {section.rows.map((row) => (
+                          <SummaryRow
+                            key={`${section.id}-${row.label}`}
+                            label={row.label}
+                            value={row.value}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <StatusBanner
+                  message={
+                    overallMissing.length === 0
+                      ? "입력이 모두 정리되었습니다. 평가 실행을 누르면 결과 화면으로 이동합니다."
+                      : `${overallMissing.join(", ")} 항목이 아직 필요합니다.`
+                  }
+                />
+                {errorMessage ? <ErrorBanner message={errorMessage} /> : null}
+
+                <div className="flex flex-wrap gap-3">
+                  <ActionButton
+                    label="이전 단계로"
+                    onClick={() => {
+                      setStepIndex(packDefinition.steps.length - 1);
+                      setScreenMode("step");
+                    }}
+                    variant="secondary"
+                  />
+                  <ActionButton
+                    label="평가 실행"
+                    onClick={() => {
+                      if (overallMissing.length > 0) {
+                        setErrorMessage(
+                          `${overallMissing.join(", ")} 항목을 먼저 선택해 주세요.`,
+                        );
+                        return;
+                      }
+
+                      void runEvaluation();
+                    }}
+                    active={isBusy}
+                    disabled={isBusy}
+                  />
+                </div>
+              </div>
+            ) : null}
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  );
+}

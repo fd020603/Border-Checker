@@ -1,11 +1,11 @@
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import yaml
 
 
-def load_json_file(file_path: Path) -> Dict[str, Any]:
+def load_json_file(file_path: Path) -> Any:
     if not file_path.exists():
         raise FileNotFoundError(f"JSON file not found: {file_path}")
 
@@ -13,7 +13,7 @@ def load_json_file(file_path: Path) -> Dict[str, Any]:
         return json.load(f)
 
 
-def load_yaml_file(file_path: Path) -> Dict[str, Any]:
+def load_yaml_file(file_path: Path) -> Any:
     if not file_path.exists():
         raise FileNotFoundError(f"YAML file not found: {file_path}")
 

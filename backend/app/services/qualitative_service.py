@@ -1,105 +1,93 @@
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List
+
+from app.services.resolution_service import (
+    collect_required_evidence,
+    collect_reviewer_notes,
+)
 
 
-RULE_ID_TO_CHECKLIST_KEY = {
-    "gdpr-art-9-special-category-review": "special_category_review",
-    "gdpr-art-28-processor-guarantees-review": "processor_review",
-    "gdpr-art-49-derogation-manual-review": "derogation_review",
-    "gdpr-art-32-security-program-review": "security_review",
-}
+def dedupe_items(values: List[str]) -> List[str]:
+    seen = set()
+    result: List[str] = []
 
-RULE_ID_TO_UNCERTAINTY_FIELD = {
-    "gdpr-art-9-special-category-review": "special_category_condition_met",
-    "gdpr-art-28-processor-guarantees-review": "processor_sufficient_guarantees",
-    "gdpr-art-49-derogation-manual-review": "derogation_used",
-    "gdpr-art-32-security-program-review": "incident_response_in_place",
-}
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+
+    return result
 
 
-def build_review_boundary_summary(pack_data: Dict[str, Any]) -> str:
-    templates = pack_data.get("qualitative_review_templates", {})
-    boundary_summary = templates.get("boundary_summary", {})
+def build_ambiguity_summary(
+    final_decision: str,
+    evidence_gaps: List[str],
+) -> str:
+    if final_decision == "manual_review":
+        return "입력 사실관계 또는 법적 해석에 공백이 있어 자동 판정만으로는 결론을 확정하지 않았습니다."
 
-    auto_decidable = boundary_summary.get(
-        "auto_decidable",
-        "일부 기술적·문서적 요소는 자동 판정 가능합니다.",
-    )
-    manual_review = boundary_summary.get(
-        "manual_review",
-        "일부 해석 의존 요소는 수동 검토가 필요합니다.",
-    )
+    if evidence_gaps:
+        return "핵심 문서 또는 증빙이 일부 비어 있어 실행 전 확인이 필요합니다."
 
-    return f"{auto_decidable} {manual_review}"
+    if final_decision == "deny":
+        return "차단 사유가 명확해 보완 전까지 진행 근거가 부족합니다."
 
+    if final_decision == "condition_allow":
+        return "이전 자체를 배제하지는 않지만 보완 조치 완료가 전제됩니다."
 
-def collect_triggered_rule_ids(triggered_rules: List[Dict[str, Any]]) -> Set[str]:
-    return {rule["rule_id"] for rule in triggered_rules}
+    return "현재 입력 범위에서는 추가 해석 공백이 크지 않습니다."
 
 
-def collect_checklist_items(
+def build_auto_reviewer_checklist(
     pack_data: Dict[str, Any],
-    triggered_rules: List[Dict[str, Any]],
+    merged_input: Dict[str, Any],
+    final_decision: str,
 ) -> List[str]:
-    templates = pack_data.get("qualitative_review_templates", {})
-    checklist_templates = templates.get("checklist_templates", {})
-
+    pack_id = str(pack_data.get("pack_id", "")).lower()
     checklist: List[str] = []
-    seen: Set[str] = set()
-    triggered_rule_ids = collect_triggered_rule_ids(triggered_rules)
 
-    for rule_id, checklist_key in RULE_ID_TO_CHECKLIST_KEY.items():
-        if rule_id not in triggered_rule_ids:
-            continue
+    if merged_input.get("contains_sensitive_data") is True:
+        checklist.append("민감정보 범위와 처리 필요성, 추가 보호조치 문서를 함께 확인하세요.")
 
-        for item in checklist_templates.get(checklist_key, []):
-            if item not in seen:
-                seen.add(item)
-                checklist.append(item)
+    if pack_id == "saudi_pdpl":
+        if merged_input.get("transfer_outside_kingdom") is True:
+            checklist.append("대상국 보호수준, 승인된 보호조치, 위험평가 문서를 최신 상태로 확인하세요.")
+        if merged_input.get("uses_processor") is True:
+            checklist.append("프로세서 계약, 준수 검증, 재이전 구조를 벤더 문서와 함께 확인하세요.")
+        if merged_input.get("processing_legal_basis") == "consent":
+            checklist.append("동의 철회 처리 방식과 관련 고지 문구가 실제 운영 화면과 일치하는지 확인하세요.")
+        if final_decision in {"deny", "manual_review"}:
+            checklist.append("자동 결과만으로 종결하지 말고 법무 또는 프라이버시 담당자 검토를 거치세요.")
+        return checklist
+
+    if merged_input.get("is_third_country_transfer") is True:
+        checklist.append("대상국, 이전 메커니즘, 이전 영향 평가, 보완조치 문서를 함께 확인하세요.")
+    if merged_input.get("uses_processor") is True:
+        checklist.append("DPA, 수탁자 보증, 하위처리자 및 재이전 통제를 계약서와 함께 확인하세요.")
+    if merged_input.get("dpia_required") is True:
+        checklist.append("DPIA 결과와 잔여 위험 승인 여부를 프라이버시 담당자와 확인하세요.")
+    if final_decision in {"deny", "manual_review"}:
+        checklist.append("자동 결과만으로 종결하지 말고 법무·프라이버시·보안 담당자가 함께 사실관계를 재확인하세요.")
 
     return checklist
-
-
-def collect_uncertainty_flags(
-    pack_data: Dict[str, Any],
-    triggered_rules: List[Dict[str, Any]],
-) -> List[str]:
-    templates = pack_data.get("qualitative_review_templates", {})
-    uncertainty_map = templates.get("uncertainty_flags", {})
-
-    flags: List[str] = []
-    seen: Set[str] = set()
-    triggered_rule_ids = collect_triggered_rule_ids(triggered_rules)
-
-    for rule_id, uncertainty_field in RULE_ID_TO_UNCERTAINTY_FIELD.items():
-        if rule_id not in triggered_rule_ids:
-            continue
-
-        message = uncertainty_map.get(uncertainty_field)
-        if message and message not in seen:
-            seen.add(message)
-            flags.append(message)
-
-    return flags
 
 
 def build_qualitative_review_hints(
     pack_data: Dict[str, Any],
     triggered_rules: List[Dict[str, Any]],
     final_decision: str,
+    merged_input: Dict[str, Any],
 ) -> Dict[str, Any]:
-    boundary_summary = build_review_boundary_summary(pack_data)
-    checklist = collect_checklist_items(pack_data, triggered_rules)
-    uncertainty_flags = collect_uncertainty_flags(pack_data, triggered_rules)
-
-    manual_review_required = (
-        final_decision == "manual_review"
-        or len(checklist) > 0
-        or len(uncertainty_flags) > 0
+    evidence_gaps = collect_required_evidence(triggered_rules)
+    reviewer_checklist = dedupe_items(
+        collect_reviewer_notes(triggered_rules)
+        + build_auto_reviewer_checklist(pack_data, merged_input, final_decision)
+        + pack_data.get("review_guidance", [])
     )
 
     return {
-        "manual_review_required": manual_review_required,
-        "review_boundary_summary": boundary_summary,
-        "checklist": checklist,
-        "uncertainty_flags": uncertainty_flags,
+        "manual_review_recommended": final_decision == "manual_review"
+        or len(evidence_gaps) > 0,
+        "ambiguity_summary": build_ambiguity_summary(final_decision, evidence_gaps),
+        "evidence_gaps": evidence_gaps,
+        "reviewer_checklist": reviewer_checklist,
     }

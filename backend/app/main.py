@@ -4,11 +4,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.evaluate import router as evaluate_router
 from app.api.merge import router as merge_router
 from app.api.packs import router as packs_router
+from app.api.samples import router as samples_router
 
 app = FastAPI(
     title="Border Checker API",
-    version="0.1.0",
-    description="Policy-based data sovereignty assessment API"
+    version="1.0.0",
+    description="Policy-based multi-jurisdiction decision-support API for cross-border data transfer compliance review",
 )
 
 app.add_middleware(
@@ -25,6 +26,7 @@ app.add_middleware(
 app.include_router(merge_router)
 app.include_router(packs_router)
 app.include_router(evaluate_router)
+app.include_router(samples_router)
 
 
 @app.get("/")
@@ -32,7 +34,7 @@ def read_root():
     return {
         "project": "Border Checker",
         "status": "ok",
-        "message": "Backend is running"
+        "message": "Backend is running",
     }
 
 

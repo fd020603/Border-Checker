@@ -17,18 +17,17 @@ def resolve_final_decision(
     return "allow"
 
 
-def resolve_risk_level(total_risk_score: int, score_bands: Dict[str, List[int]]) -> str:
-    for level_name, band in score_bands.items():
-        min_score, max_score = band
-        if min_score <= total_risk_score <= max_score:
-            return level_name
+def collect_legal_basis_articles(triggered_rules: List[Dict[str, Any]]) -> List[str]:
+    seen = set()
+    articles: List[str] = []
 
-    return "unknown"
+    for rule in triggered_rules:
+        article = rule.get("article")
+        if article and article not in seen:
+            seen.add(article)
+            articles.append(article)
 
-
-def collect_legal_basis_articles(triggered_rules: List[Dict[str, Any]]) -> List[int]:
-    articles = {rule["article"] for rule in triggered_rules}
-    return sorted(articles)
+    return articles
 
 
 def collect_required_actions(triggered_rules: List[Dict[str, Any]]) -> List[str]:
@@ -42,3 +41,29 @@ def collect_required_actions(triggered_rules: List[Dict[str, Any]]) -> List[str]
                 actions.append(action)
 
     return actions
+
+
+def collect_required_evidence(triggered_rules: List[Dict[str, Any]]) -> List[str]:
+    seen = set()
+    evidence_items: List[str] = []
+
+    for rule in triggered_rules:
+        for item in rule.get("required_evidence", []):
+            if item not in seen:
+                seen.add(item)
+                evidence_items.append(item)
+
+    return evidence_items
+
+
+def collect_reviewer_notes(triggered_rules: List[Dict[str, Any]]) -> List[str]:
+    seen = set()
+    notes: List[str] = []
+
+    for rule in triggered_rules:
+        for note in rule.get("reviewer_notes", []):
+            if note not in seen:
+                seen.add(note)
+                notes.append(note)
+
+    return notes
